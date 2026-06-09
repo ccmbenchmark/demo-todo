@@ -257,11 +257,20 @@ app.delete("/api/notes/:id", async (req, res) => {
 
 // --- Démarrage ------------------------------------------------------------
 const port = process.env.PORT || 3000;
-initDb()
-  .then(() => {
-    app.listen(port, () => console.log(`Appli en ligne sur le port ${port}`));
-  })
-  .catch((err) => {
-    console.error(err.message);
-    process.exit(1);
-  });
+
+// Indique en clair vers quel hôte de base on se connecte (sans le mot de passe).
+try {
+  const u = new URL(dbUrl);
+  console.log(`Connexion base visée : ${u.hostname}:${u.port || 3306} (db ${u.pathname.slice(1)})`);
+} catch {}
+
+// On démarre le serveur web IMMÉDIATEMENT : le conteneur reste en ligne même si la
+// base met du temps à être prête (important sur les PaaS type Dokploy/Coolify).
+app.listen(port, () => console.log(`Appli en ligne sur le port ${port}`));
+
+// Connexion à la base en arrière-plan, avec de larges réessais (~2 min). On ne quitte
+// JAMAIS le process : si la base tarde, les routes répondront en erreur le temps qu'elle
+// soit prête, mais le conteneur ne plante pas.
+initDb(60).catch((err) =>
+  console.error("initDb a échoué après plusieurs essais :", err.message)
+);
