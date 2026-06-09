@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mes projets & tâches</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #f4f5f7;
+      margin: 0;
+      padding: 32px 16px;
+      color: #1a1a2e;
+    }
+    .layout {
+      max-width: 960px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+      padding: 22px;
+    }
+    h1 { margin: 0 0 16px; font-size: 22px; }
+    h2 { margin: 0 0 14px; font-size: 18px; }
+    h3 { margin: 22px 0 12px; font-size: 16px; color: #374151; }
+    p.sub { margin: 0 0 18px; color: #6b7280; font-size: 13px; }
+
+    form.row { display: flex; gap: 8px; margin-bottom: 14px; }
+    input[type=text] {
+      flex: 1; padding: 10px 12px; border: 1px solid #d1d5db;
+      border-radius: 10px; font-size: 14px; width: 100%;
+    }
+    textarea {
+      width: 100%; padding: 10px 12px; border: 1px solid #d1d5db;
+      border-radius: 10px; font-size: 14px; resize: vertical; min-height: 80px;
+      font-family: inherit;
+    }
+    button.add {
+      padding: 10px 16px; border: none; border-radius: 10px;
+      background: #4f46e5; color: #fff; font-size: 14px; cursor: pointer;
+      white-space: nowrap;
+    }
+    button.add:hover { background: #4338ca; }
+    button.ghost {
+      padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 10px;
+      background: #fff; color: #374151; font-size: 13px; cursor: pointer;
+    }
+    button.ghost:hover { background: #f3f4f6; }
+
+    /* Projets */
+    ul.projects { list-style: none; padding: 0; margin: 0; }
+    ul.projects li {
+      display: flex; align-items: center; gap: 6px;
+      padding: 10px 12px; border-radius: 10px; cursor: pointer;
+      font-size: 15px; margin-bottom: 4px;
+    }
+    ul.projects li:hover { background: #f3f4f6; }
+    ul.projects li.active { background: #eef2ff; color: #4338ca; font-weight: 600; }
+    ul.projects li .pname { flex: 1; }
+    /* Pastille de couleur d'un projet */
+    .dot {
+      width: 13px; height: 13px; border-radius: 50%;
+      flex: none; cursor: pointer; border: 2px solid #fff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.12);
+    }
+    .dot.big { width: 16px; height: 16px; }
+
+    /* Choix de couleurs (palette) */
+    .swatches { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+    .swatch {
+      width: 22px; height: 22px; border-radius: 50%;
+      cursor: pointer; border: 2px solid #fff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.15);
+    }
+    .swatch.selected { box-shadow: 0 0 0 2px #1a1a2e; }
+    .swatch-pop {
+      position: absolute; z-index: 10; background: #fff;
+      border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+      display: flex; flex-wrap: wrap; gap: 8px; width: 132px;
+    }
+    ul.projects li .del {
+      border: none; background: none; color: #9ca3af; cursor: pointer;
+      font-size: 15px; padding: 2px 4px; visibility: hidden;
+    }
+    ul.projects li:hover .del { visibility: visible; }
+    ul.projects li .del:hover { color: #ef4444; }
+
+    /* Tâches */
+    ul.tasks { list-style: none; padding: 0; margin: 0; }
+    ul.tasks li {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 4px; border-bottom: 1px solid #eef0f3;
+    }
+    ul.tasks li:last-child { border-bottom: none; }
+    ul.tasks li .title { flex: 1; font-size: 15px; }
+    ul.tasks li.done .title { text-decoration: line-through; color: #9ca3af; }
+    input[type=checkbox] { width: 19px; height: 19px; cursor: pointer; }
+    button.del {
+      border: none; background: none; color: #ef4444;
+      font-size: 17px; cursor: pointer; padding: 4px 8px;
+    }
+
+    /* Notes */
+    .note {
+      border: 1px solid #eef0f3; border-radius: 12px;
+      padding: 14px; margin-bottom: 12px;
+    }
+    .note .nhead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .note .ntitle { flex: 1; font-weight: 600; font-size: 15px; }
+    .note .nbody { white-space: pre-wrap; font-size: 14px; color: #374151; }
+    .note .nbody:empty::before { content: "(note vide)"; color: #9ca3af; }
+    .note .nactions button { margin-left: 2px; }
+    .note-form { border: 1px dashed #c7cbd3; border-radius: 12px; padding: 14px; margin-bottom: 16px; }
+    .note-form input[type=text] { margin-bottom: 8px; }
+    .note-form .actions { display: flex; gap: 8px; margin-top: 8px; }
+
+    .empty { text-align: center; color: #9ca3af; padding: 18px 0; font-size: 14px; }
+    .hint { color: #9ca3af; font-size: 14px; padding: 40px 0; text-align: center; }
+
+    @media (max-width: 720px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+
+    <!-- Colonne gauche : projets -->
+    <aside class="card">
+      <h1>📁 Projets</h1>
+      <form class="row" id="project-form">
+        <input type="text" id="project-name" placeholder="Nouveau projet..." autocomplete="off" />
+        <button type="submit" class="add">+</button>
+      </form>
+      <div class="swatches" id="new-color-swatches" title="Couleur du nouveau projet"></div>
+      <ul class="projects" id="project-list"></ul>
+    </aside>
+
+    <!-- Colonne droite : projet ouvert -->
+    <main class="card" id="main-panel">
+      <div class="hint" id="hint">Sélectionnez ou créez un projet à gauche pour commencer.</div>
+
+      <div id="content" style="display:none;">
+        <h2 id="project-title" style="display:flex; align-items:center; gap:10px;">
+          <span class="dot big" id="project-title-dot" style="display:none;"></span>
+          <span id="project-title-text">—</span>
+        </h2>
+        <p class="sub">Tâches et notes enregistrées dans la base de données.</p>
+
+        <h3>✅ Tâches</h3>
+        <form class="row" id="task-form">
+          <input type="text" id="task-title" placeholder="Ajouter une tâche..." autocomplete="off" />
+          <button type="submit" class="add">Ajouter</button>
+        </form>
+        <ul class="tasks" id="task-list"></ul>
+
+        <h3>📝 Notes</h3>
+        <button class="ghost" id="new-note-btn">+ Nouvelle note</button>
+        <div id="note-form-zone"></div>
+        <div id="note-list" style="margin-top:14px;"></div>
+      </div>
+    </main>
+
+  </div>
+
+  <script>
+    let currentProject = null;
+
+    // Palette identique à celle validée côté serveur. La 1re est la couleur par défaut.
+    const PROJECT_COLORS = [
+      "#4f46e5", "#16a34a", "#ea580c", "#dc2626",
+      "#7c3aed", "#db2777", "#0891b2", "#6b7280",
+    ];
+    let newProjectColor = PROJECT_COLORS[0]; // couleur choisie pour le prochain projet
+
+    const projectList = document.getElementById("project-list");
+    const projectForm = document.getElementById("project-form");
+    const projectNameInput = document.getElementById("project-name");
+    const newColorSwatches = document.getElementById("new-color-swatches");
+    const hint = document.getElementById("hint");
+    const content = document.getElementById("content");
+    const projectTitleText = document.getElementById("project-title-text");
+    const projectTitleDot = document.getElementById("project-title-dot");
+
+    const taskList = document.getElementById("task-list");
+    const taskForm = document.getElementById("task-form");
+    const taskTitleInput = document.getElementById("task-title");
+
+    const newNoteBtn = document.getElementById("new-note-btn");
+    const noteFormZone = document.getElementById("note-form-zone");
+    const noteList = document.getElementById("note-list");
+
+    // --- Couleurs ---
+    // Affiche la palette de choix pour le nouveau projet.
+    function renderNewColorSwatches() {
+      newColorSwatches.innerHTML = "";
+      for (const color of PROJECT_COLORS) {
+        const sw = document.createElement("span");
+        sw.className = "swatch" + (color === newProjectColor ? " selected" : "");
+        sw.style.background = color;
+        sw.title = "Couleur du nouveau projet";
+        sw.onclick = () => { newProjectColor = color; renderNewColorSwatches(); };
+        newColorSwatches.appendChild(sw);
+      }
+    }
+
+    // Ouvre une petite fenêtre de choix de couleur près d'un élément,
+    // et applique la couleur choisie à un projet existant (via PATCH).
+    function openColorPopup(anchorEl, project) {
+      document.querySelectorAll(".swatch-pop").forEach((el) => el.remove());
+      const pop = document.createElement("div");
+      pop.className = "swatch-pop";
+      for (const color of PROJECT_COLORS) {
+        const sw = document.createElement("span");
+        sw.className = "swatch" + (color === project.color ? " selected" : "");
+        sw.style.background = color;
+        sw.onclick = async (e) => {
+          e.stopPropagation();
+          pop.remove();
+          await fetch("/api/projects/" + project.id, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ color }),
+          });
+          loadProjects();
+        };
+        pop.appendChild(sw);
+      }
+      const rect = anchorEl.getBoundingClientRect();
+      pop.style.top = window.scrollY + rect.bottom + 6 + "px";
+      pop.style.left = window.scrollX + rect.left + "px";
+      document.body.appendChild(pop);
+      // Fermer si on clique ailleurs.
+      setTimeout(() => {
+        document.addEventListener("click", function close() {
+          pop.remove();
+          document.removeEventListener("click", close);
+        });
+      }, 0);
+    }
+
+    // --- Projets ---
+    async function loadProjects() {
+      const projects = await (await fetch("/api/projects")).json();
+      projectList.innerHTML = "";
+      if (projects.length === 0) {
+        currentProject = null;
+        showProject();
+        return;
+      }
+      // Garder la sélection si possible, sinon prendre le premier.
+      if (!currentProject || !projects.find((p) => p.id === currentProject.id)) {
+        currentProject = projects[0];
+      } else {
+        currentProject = projects.find((p) => p.id === currentProject.id);
+      }
+      for (const p of projects) {
+        const li = document.createElement("li");
+        if (currentProject && p.id === currentProject.id) li.classList.add("active");
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        dot.style.background = p.color || PROJECT_COLORS[0];
+        dot.title = "Changer la couleur";
+        dot.onclick = (e) => { e.stopPropagation(); openColorPopup(dot, p); };
+        const span = document.createElement("span");
+        span.className = "pname";
+        span.textContent = p.name;
+        span.onclick = () => { currentProject = p; loadProjects(); };
+        const del = document.createElement("button");
+        del.className = "del";
+        del.title = "Supprimer le projet";
+        del.textContent = "🗑️";
+        del.onclick = async (e) => {
+          e.stopPropagation();
+          if (!confirm(`Supprimer le projet « ${p.name} » et tout son contenu ?`)) return;
+          await fetch("/api/projects/" + p.id, { method: "DELETE" });
+          if (currentProject && currentProject.id === p.id) currentProject = null;
+          loadProjects();
+        };
+        li.appendChild(dot);
+        li.appendChild(span);
+        li.appendChild(del);
+        projectList.appendChild(li);
+      }
+      showProject();
+    }
+
+    function showProject() {
+      noteFormZone.innerHTML = "";
+      if (!currentProject) {
+        hint.style.display = "block";
+        content.style.display = "none";
+        return;
+      }
+      hint.style.display = "none";
+      content.style.display = "block";
+      projectTitleText.textContent = currentProject.name;
+      projectTitleDot.style.display = "inline-block";
+      projectTitleDot.style.background = currentProject.color || PROJECT_COLORS[0];
+      loadTasks();
+      loadNotes();
+    }
+
+    projectForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const name = projectNameInput.value.trim();
+      if (!name) return;
+      const created = await (await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, color: newProjectColor }),
+      })).json();
+      projectNameInput.value = "";
+      currentProject = created;
+      loadProjects();
+    };
+
+    // --- Tâches ---
+    async function loadTasks() {
+      const tasks = await (await fetch("/api/tasks?project_id=" + currentProject.id)).json();
+      taskList.innerHTML = "";
+      if (tasks.length === 0) {
+        taskList.innerHTML = '<li class="empty">Aucune tâche pour le moment 🎉</li>';
+        return;
+      }
+      for (const t of tasks) {
+        const li = document.createElement("li");
+        if (t.done) li.classList.add("done");
+        li.innerHTML = `
+          <input type="checkbox" ${t.done ? "checked" : ""} />
+          <span class="title"></span>
+          <button class="del" title="Supprimer">🗑️</button>
+        `;
+        li.querySelector(".title").textContent = t.title;
+        li.querySelector("input").onchange = async () => {
+          await fetch("/api/tasks/" + t.id, { method: "PATCH" });
+          loadTasks();
+        };
+        li.querySelector(".del").onclick = async () => {
+          await fetch("/api/tasks/" + t.id, { method: "DELETE" });
+          loadTasks();
+        };
+        taskList.appendChild(li);
+      }
+    }
+
+    taskForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const title = taskTitleInput.value.trim();
+      if (!title) return;
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, project_id: currentProject.id }),
+      });
+      taskTitleInput.value = "";
+      loadTasks();
+    };
+
+    // --- Notes ---
+    async function loadNotes() {
+      const notes = await (await fetch("/api/notes?project_id=" + currentProject.id)).json();
+      noteList.innerHTML = "";
+      if (notes.length === 0) {
+        noteList.innerHTML = '<div class="empty">Aucune note pour ce projet.</div>';
+        return;
+      }
+      for (const n of notes) {
+        const div = document.createElement("div");
+        div.className = "note";
+        const head = document.createElement("div");
+        head.className = "nhead";
+        const title = document.createElement("div");
+        title.className = "ntitle";
+        title.textContent = n.title;
+        const actions = document.createElement("div");
+        actions.className = "nactions";
+        const edit = document.createElement("button");
+        edit.className = "ghost";
+        edit.textContent = "Modifier";
+        edit.onclick = () => openNoteForm(n);
+        const del = document.createElement("button");
+        del.className = "ghost";
+        del.textContent = "Supprimer";
+        del.onclick = async () => {
+          if (!confirm(`Supprimer la note « ${n.title} » ?`)) return;
+          await fetch("/api/notes/" + n.id, { method: "DELETE" });
+          loadNotes();
+        };
+        actions.appendChild(edit);
+        actions.appendChild(del);
+        head.appendChild(title);
+        head.appendChild(actions);
+        const body = document.createElement("div");
+        body.className = "nbody";
+        body.textContent = n.body || "";
+        div.appendChild(head);
+        div.appendChild(body);
+        noteList.appendChild(div);
+      }
+    }
+
+    function openNoteForm(note) {
+      const editing = !!note;
+      noteFormZone.innerHTML = "";
+      const zone = document.createElement("div");
+      zone.className = "note-form";
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.placeholder = "Titre de la note";
+      titleInput.value = editing ? note.title : "";
+      const bodyInput = document.createElement("textarea");
+      bodyInput.placeholder = "Écrivez votre note ici...";
+      bodyInput.value = editing ? (note.body || "") : "";
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const save = document.createElement("button");
+      save.className = "add";
+      save.textContent = "Enregistrer";
+      save.onclick = async () => {
+        const title = titleInput.value.trim();
+        if (!title) { titleInput.focus(); return; }
+        const payload = { title, body: bodyInput.value, project_id: currentProject.id };
+        if (editing) {
+          await fetch("/api/notes/" + note.id, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await fetch("/api/notes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+        }
+        noteFormZone.innerHTML = "";
+        loadNotes();
+      };
+      const cancel = document.createElement("button");
+      cancel.className = "ghost";
+      cancel.textContent = "Annuler";
+      cancel.onclick = () => { noteFormZone.innerHTML = ""; };
+      actions.appendChild(save);
+      actions.appendChild(cancel);
+      zone.appendChild(titleInput);
+      zone.appendChild(bodyInput);
+      zone.appendChild(actions);
+      noteFormZone.appendChild(zone);
+      titleInput.focus();
+    }
+
+    newNoteBtn.onclick = () => openNoteForm(null);
+
+    // --- Démarrage ---
+    renderNewColorSwatches();
+    loadProjects();
+  </script>
+</body>
+</html>
