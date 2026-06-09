@@ -255,6 +255,16 @@ app.delete("/api/notes/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Diagnostic (temporaire) ---------------------------------------------
+app.get("/__dbcheck", async (req, res) => {
+  try {
+    const [r] = await pool.query("SELECT 1 AS ok");
+    res.json({ db: "ok", result: r });
+  } catch (e) {
+    res.status(500).json({ db: "error", code: e.code, errno: e.errno, message: e.message });
+  }
+});
+
 // --- Démarrage ------------------------------------------------------------
 const port = process.env.PORT || 3000;
 
