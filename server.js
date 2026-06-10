@@ -25,9 +25,15 @@ function sanitizeColor(value) {
   return PROJECT_COLORS.includes(value) ? value : DEFAULT_COLOR;
 }
 
-// Une échéance valide est une date au format AAAA-MM-JJ.
+// Une échéance valide est une date RÉELLE au format AAAA-MM-JJ.
+// (La seule regex laisserait passer "2026-99-99", que MySQL rejetterait en
+// faisant échouer la requête ; on vérifie donc que la date existe vraiment.)
 function isValidDueDate(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split("-").map(Number);
+  if (y < 1000) return false; // plage minimale du type DATE de MySQL
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
 }
 
 // --- Connexion à la base MySQL -------------------------------------------
@@ -44,6 +50,16 @@ if (!dbUrl) {
 }
 
 const pool = mysql.createPool(dbUrl);
+
+// Indique si une colonne existe déjà dans une table (utilisé par les migrations).
+async function columnExists(table, column) {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column]
+  );
+  return rows.length > 0;
+}
 
 // Crée/complète les tables si besoin. On réessaie quelques fois car la base
 // peut mettre quelques secondes à être prête au démarrage.
@@ -81,11 +97,7 @@ async function initDb(retries = 10) {
       }
 
       // 4) Ajouter la colonne project_id aux tâches si elle n'existe pas encore.
-      const [cols] = await pool.query(
-        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'project_id'`
-      );
-      if (cols.length === 0) {
+      if (!(await columnExists("tasks", "project_id"))) {
         await pool.query("ALTER TABLE tasks ADD COLUMN project_id INT NULL");
         // Ranger toutes les tâches existantes dans le projet "Général".
         await pool.query("UPDATE tasks SET project_id = ? WHERE project_id IS NULL", [defaultProjectId]);
@@ -93,21 +105,13 @@ async function initDb(retries = 10) {
 
       // 4 bis) Ajouter la colonne "due_date" (échéance) aux tâches si absente.
       //        Les tâches existantes restent simplement sans échéance.
-      const [dueCols] = await pool.query(
-        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'due_date'`
-      );
-      if (dueCols.length === 0) {
+      if (!(await columnExists("tasks", "due_date"))) {
         await pool.query("ALTER TABLE tasks ADD COLUMN due_date DATE NULL");
       }
 
       // 4 ter) Ajouter la colonne "color" aux projets si elle n'existe pas encore.
       //        Les projets existants prennent la couleur par défaut (bleu).
-      const [colorCols] = await pool.query(
-        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'color'`
-      );
-      if (colorCols.length === 0) {
+      if (!(await columnExists("projects", "color"))) {
         await pool.query(
           "ALTER TABLE projects ADD COLUMN color VARCHAR(7) NOT NULL DEFAULT ?",
           [DEFAULT_COLOR]
@@ -304,7 +308,10 @@ app.get("/__dbcheck", async (req, res) => {
     const [r] = await pool.query("SELECT 1 AS ok");
     res.json({ db: "ok", result: r });
   } catch (e) {
-    res.status(500).json({ db: "error", code: e.code, errno: e.errno, message: e.message });
+    // Le détail complet reste dans les logs serveur ; on ne renvoie au
+    // navigateur qu'un code d'erreur, pas le message technique brut.
+    console.error("/__dbcheck :", e);
+    res.status(500).json({ db: "error", code: e.code });
   }
 });
 
