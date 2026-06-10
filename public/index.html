@@ -102,6 +102,29 @@
     ul.tasks li:last-child { border-bottom: none; }
     ul.tasks li .title { flex: 1; font-size: 15px; }
     ul.tasks li.done .title { text-decoration: line-through; color: #9ca3af; }
+
+    /* Échéances */
+    .due {
+      font-size: 12px; padding: 3px 9px; border-radius: 999px;
+      background: #f3f4f6; color: #6b7280; cursor: pointer; white-space: nowrap;
+    }
+    .due:hover { box-shadow: 0 0 0 1px #d1d5db; }
+    .due.today { background: #ffedd5; color: #c2410c; font-weight: 600; }
+    .due.late { background: #fee2e2; color: #b91c1c; font-weight: 600; }
+    .due-add {
+      border: none; background: none; cursor: pointer; font-size: 14px;
+      color: #9ca3af; padding: 2px 4px; visibility: hidden;
+    }
+    ul.tasks li:hover .due-add { visibility: visible; }
+    .due-edit { display: flex; gap: 6px; align-items: center; }
+    .due-edit input[type=date] {
+      padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px;
+    }
+    .due-edit button { font-size: 12px; padding: 5px 9px; }
+    input[type=date]#task-due {
+      padding: 10px 10px; border: 1px solid #d1d5db; border-radius: 10px;
+      font-size: 13px; color: #374151;
+    }
     input[type=checkbox] { width: 19px; height: 19px; cursor: pointer; }
     button.del {
       border: none; background: none; color: #ef4444;
@@ -158,6 +181,7 @@
         <h3>✅ Tâches</h3>
         <form class="row" id="task-form">
           <input type="text" id="task-title" placeholder="Ajouter une tâche..." autocomplete="off" />
+          <input type="date" id="task-due" title="Date limite (facultative)" />
           <button type="submit" class="add">Ajouter</button>
         </form>
         <ul class="tasks" id="task-list"></ul>
@@ -193,6 +217,7 @@
     const taskList = document.getElementById("task-list");
     const taskForm = document.getElementById("task-form");
     const taskTitleInput = document.getElementById("task-title");
+    const taskDueInput = document.getElementById("task-due");
 
     const newNoteBtn = document.getElementById("new-note-btn");
     const noteFormZone = document.getElementById("note-form-zone");
@@ -324,6 +349,75 @@
     };
 
     // --- Tâches ---
+
+    // Date du jour locale au format AAAA-MM-JJ (comparable en texte avec due_date).
+    function todayStr() {
+      const d = new Date();
+      return d.getFullYear() + "-" +
+        String(d.getMonth() + 1).padStart(2, "0") + "-" +
+        String(d.getDate()).padStart(2, "0");
+    }
+
+    // "2026-06-12" -> "12 juin" (ou "12 juin 2027" si autre année).
+    function formatDue(dateStr) {
+      const [y, m, day] = dateStr.split("-").map(Number);
+      const d = new Date(y, m - 1, day);
+      const opts = { day: "numeric", month: "short" };
+      if (y !== new Date().getFullYear()) opts.year = "numeric";
+      return d.toLocaleDateString("fr-FR", opts);
+    }
+
+    // Badge d'échéance d'une tâche : rouge en retard, orange aujourd'hui, gris sinon.
+    function makeDueBadge(t) {
+      const badge = document.createElement("span");
+      badge.className = "due";
+      const today = todayStr();
+      if (!t.done && t.due_date < today) {
+        badge.classList.add("late");
+        badge.textContent = "⚠️ " + formatDue(t.due_date);
+        badge.title = "En retard — cliquer pour modifier la date";
+      } else if (!t.done && t.due_date === today) {
+        badge.classList.add("today");
+        badge.textContent = "📅 aujourd'hui";
+        badge.title = "À faire aujourd'hui — cliquer pour modifier la date";
+      } else {
+        badge.textContent = "📅 " + formatDue(t.due_date);
+        badge.title = "Cliquer pour modifier la date";
+      }
+      return badge;
+    }
+
+    // Remplace le badge par un petit éditeur de date (OK / Effacer).
+    function openDueEditor(li, t) {
+      const old = li.querySelector(".due, .due-add");
+      const zone = document.createElement("span");
+      zone.className = "due-edit";
+      const input = document.createElement("input");
+      input.type = "date";
+      input.value = t.due_date || "";
+      const ok = document.createElement("button");
+      ok.className = "add";
+      ok.textContent = "OK";
+      const clear = document.createElement("button");
+      clear.className = "ghost";
+      clear.textContent = "Effacer";
+      async function saveDue(value) {
+        await fetch("/api/tasks/" + t.id, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ due_date: value }),
+        });
+        loadTasks();
+      }
+      ok.onclick = () => saveDue(input.value || "");
+      clear.onclick = () => saveDue("");
+      zone.appendChild(input);
+      zone.appendChild(ok);
+      zone.appendChild(clear);
+      old.replaceWith(zone);
+      input.focus();
+    }
+
     async function loadTasks() {
       const tasks = await (await fetch("/api/tasks?project_id=" + currentProject.id)).json();
       taskList.innerHTML = "";
@@ -340,11 +434,26 @@
           <button class="del" title="Supprimer">🗑️</button>
         `;
         li.querySelector(".title").textContent = t.title;
+        // Badge d'échéance (ou bouton discret pour en ajouter une), avant la corbeille.
+        const delBtn = li.querySelector(".del");
+        if (t.due_date) {
+          const badge = makeDueBadge(t);
+          badge.onclick = () => openDueEditor(li, t);
+          li.insertBefore(badge, delBtn);
+        } else {
+          const addDue = document.createElement("button");
+          addDue.className = "due-add";
+          addDue.type = "button";
+          addDue.textContent = "📅";
+          addDue.title = "Ajouter une date limite";
+          addDue.onclick = () => openDueEditor(li, t);
+          li.insertBefore(addDue, delBtn);
+        }
         li.querySelector("input").onchange = async () => {
           await fetch("/api/tasks/" + t.id, { method: "PATCH" });
           loadTasks();
         };
-        li.querySelector(".del").onclick = async () => {
+        delBtn.onclick = async () => {
           await fetch("/api/tasks/" + t.id, { method: "DELETE" });
           loadTasks();
         };
@@ -356,12 +465,15 @@
       e.preventDefault();
       const title = taskTitleInput.value.trim();
       if (!title) return;
+      const payload = { title, project_id: currentProject.id };
+      if (taskDueInput.value) payload.due_date = taskDueInput.value;
       await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, project_id: currentProject.id }),
+        body: JSON.stringify(payload),
       });
       taskTitleInput.value = "";
+      taskDueInput.value = "";
       loadTasks();
     };
 

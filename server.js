@@ -25,6 +25,11 @@ function sanitizeColor(value) {
   return PROJECT_COLORS.includes(value) ? value : DEFAULT_COLOR;
 }
 
+// Une échéance valide est une date au format AAAA-MM-JJ.
+function isValidDueDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 // --- Connexion à la base MySQL -------------------------------------------
 // Railway fournit l'URL de connexion via une variable d'environnement.
 // On accepte plusieurs noms possibles pour plus de souplesse.
@@ -86,7 +91,17 @@ async function initDb(retries = 10) {
         await pool.query("UPDATE tasks SET project_id = ? WHERE project_id IS NULL", [defaultProjectId]);
       }
 
-      // 4 bis) Ajouter la colonne "color" aux projets si elle n'existe pas encore.
+      // 4 bis) Ajouter la colonne "due_date" (échéance) aux tâches si absente.
+      //        Les tâches existantes restent simplement sans échéance.
+      const [dueCols] = await pool.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'due_date'`
+      );
+      if (dueCols.length === 0) {
+        await pool.query("ALTER TABLE tasks ADD COLUMN due_date DATE NULL");
+      }
+
+      // 4 ter) Ajouter la colonne "color" aux projets si elle n'existe pas encore.
       //        Les projets existants prennent la couleur par défaut (bleu).
       const [colorCols] = await pool.query(
         `SELECT COLUMN_NAME FROM information_schema.COLUMNS
@@ -181,28 +196,56 @@ app.delete("/api/projects/:id", async (req, res) => {
 app.get("/api/tasks", async (req, res) => {
   const projectId = req.query.project_id;
   if (!projectId) return res.json([]);
+  // DATE_FORMAT garantit un due_date en texte AAAA-MM-JJ, sans décalage de fuseau.
+  // Tri : les tâches avec échéance d'abord (la plus proche en premier), puis les autres.
   const [rows] = await pool.query(
-    "SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC",
+    `SELECT id, title, done, project_id, created_at,
+            DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date
+     FROM tasks WHERE project_id = ?
+     ORDER BY (due_date IS NULL), due_date ASC, created_at DESC`,
     [projectId]
   );
   res.json(rows);
 });
 
-// Ajouter une tâche dans un projet
+// Ajouter une tâche dans un projet (échéance optionnelle)
 app.post("/api/tasks", async (req, res) => {
   const title = (req.body.title || "").trim();
   const projectId = req.body.project_id;
   if (!title) return res.status(400).json({ error: "Le titre est vide." });
   if (!projectId) return res.status(400).json({ error: "Aucun projet sélectionné." });
+  let dueDate = null;
+  if (req.body.due_date) {
+    if (!isValidDueDate(req.body.due_date)) {
+      return res.status(400).json({ error: "La date limite est invalide." });
+    }
+    dueDate = req.body.due_date;
+  }
   const [result] = await pool.query(
-    "INSERT INTO tasks (title, project_id) VALUES (?, ?)",
-    [title, projectId]
+    "INSERT INTO tasks (title, project_id, due_date) VALUES (?, ?, ?)",
+    [title, projectId, dueDate]
   );
-  res.status(201).json({ id: result.insertId, title, done: false, project_id: projectId });
+  res.status(201).json({
+    id: result.insertId, title, done: false, project_id: projectId, due_date: dueDate,
+  });
 });
 
-// Cocher / décocher une tâche
+// Modifier une tâche :
+// - corps avec "due_date" → change l'échéance ("" ou null pour l'effacer)
+// - sinon → coche/décoche la tâche (comportement historique)
 app.patch("/api/tasks/:id", async (req, res) => {
+  if (req.body && req.body.due_date !== undefined) {
+    const raw = req.body.due_date;
+    let dueDate = null;
+    if (raw !== null && raw !== "") {
+      if (!isValidDueDate(raw)) {
+        return res.status(400).json({ error: "La date limite est invalide." });
+      }
+      dueDate = raw;
+    }
+    await pool.query("UPDATE tasks SET due_date = ? WHERE id = ?", [dueDate, req.params.id]);
+    return res.json({ ok: true });
+  }
   await pool.query("UPDATE tasks SET done = NOT done WHERE id = ?", [req.params.id]);
   res.json({ ok: true });
 });
