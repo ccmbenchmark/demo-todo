@@ -59,3 +59,19 @@ supprimer) et ses **notes** écrites. Tout est enregistré en base.
   HTTP 200, `due_date` renvoyé par `/api/tasks`, champ date présent sur la page, logs sans erreur ;
   nettoyage post-déploiement vérifié, rien à supprimer)
 <!-- FIN ZONE GÉRÉE -->
+
+## Déploiement parallèle sur Dokploy
+- **Serveur Dokploy** : `http://91.209.35.239:3000` (auth via la CLI `dokploy`, config stockée par la CLI)
+- **Projet** : `demo-todo` — id `eki_vIee05Jt_hcRSGCn1` — environnement `production`
+- **Application** : `demo-todo-app` — id `_UDHnkxZM3fEWOynHW-Iy`
+  - Source : dépôt GitHub `https://github.com/ccmbenchmark/demo-todo.git`, branche `main`,
+    build par `Dockerfile`. **Le déploiement Dokploy nécessite donc un `git push` préalable**,
+    puis un déclenchement manuel : `dokploy application deploy --applicationId '_UDHnkxZM3fEWOynHW-Iy'`
+  - URL publique : http://demo-todo.91.209.35.239.sslip.io
+  - Base de données : MariaDB du même projet Dokploy (compatible MySQL), reliée via `DATABASE_URL`
+- **Astuce CLI** : `dokploy application one` renvoie une erreur 400 ; passer par
+  `dokploy project all --json` ou par l'API tRPC (`/api/trpc/application.one?input=...`,
+  en-tête `x-api-key`) pour lire les détails.
+- **Déploiement (2026-06-10)** : fonctionnalité « dates d'échéance » mise en ligne
+  (push GitHub autorisé par l'utilisateur + déclenchement CLI). Vérifié : page HTTP 200 avec champ
+  date, `/__dbcheck` OK, création/lecture/suppression d'une tâche avec `due_date` via l'API OK.
