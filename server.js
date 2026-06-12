@@ -1,13 +1,11 @@
 import express from "express";
-import mysql from "mysql2/promise";
+import pg from "pg";
 
 const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
 // --- Palette de couleurs autorisées pour les projets ---------------------
-// Source de vérité côté serveur : toute couleur hors de cette liste est
-// refusée (on retombe alors sur la couleur par défaut).
 const PROJECT_COLORS = [
   "#4f46e5", // bleu (défaut)
   "#16a34a", // vert
@@ -19,117 +17,71 @@ const PROJECT_COLORS = [
   "#6b7280", // gris
 ];
 const DEFAULT_COLOR = PROJECT_COLORS[0];
-
-// Renvoie la couleur si elle fait partie de la palette, sinon la couleur par défaut.
 function sanitizeColor(value) {
   return PROJECT_COLORS.includes(value) ? value : DEFAULT_COLOR;
 }
 
 // Une échéance valide est une date RÉELLE au format AAAA-MM-JJ.
-// (La seule regex laisserait passer "2026-99-99", que MySQL rejetterait en
-// faisant échouer la requête ; on vérifie donc que la date existe vraiment.)
 function isValidDueDate(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [y, m, d] = value.split("-").map(Number);
-  if (y < 1000) return false; // plage minimale du type DATE de MySQL
+  if (y < 1000) return false;
   const date = new Date(Date.UTC(y, m - 1, d));
   return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
 }
 
-// --- Connexion à la base MySQL -------------------------------------------
-// Railway fournit l'URL de connexion via une variable d'environnement.
-// On accepte plusieurs noms possibles pour plus de souplesse.
-const dbUrl =
-  process.env.DATABASE_URL ||
-  process.env.MYSQL_URL ||
-  process.env.MYSQL_PUBLIC_URL;
-
+// --- Connexion à la base PostgreSQL (Render) ------------------------------
+const dbUrl = process.env.DATABASE_URL;
 if (!dbUrl) {
-  console.error("Aucune URL de base de données trouvée (DATABASE_URL / MYSQL_URL).");
+  console.error("Aucune URL de base de données trouvée (DATABASE_URL).");
   process.exit(1);
 }
+const pool = new pg.Pool({
+  connectionString: dbUrl,
+  ssl: dbUrl.includes("localhost") ? false : { rejectUnauthorized: false },
+});
 
-const pool = mysql.createPool(dbUrl);
-
-// Indique si une colonne existe déjà dans une table (utilisé par les migrations).
-async function columnExists(table, column) {
-  const [rows] = await pool.query(
-    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-    [table, column]
-  );
-  return rows.length > 0;
-}
-
-// Crée/complète les tables si besoin. On réessaie quelques fois car la base
-// peut mettre quelques secondes à être prête au démarrage.
+// Crée/complète les tables si besoin. Réessais car la base peut tarder au démarrage.
 async function initDb(retries = 10) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      // 1) Table des projets
       await pool.query(`
         CREATE TABLE IF NOT EXISTS projects (
-          id INT AUTO_INCREMENT PRIMARY KEY,
+          id SERIAL PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
+          color VARCHAR(7) NOT NULL DEFAULT '${DEFAULT_COLOR}',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-
-      // 2) Table des tâches (créée si absente)
       await pool.query(`
         CREATE TABLE IF NOT EXISTS tasks (
-          id INT AUTO_INCREMENT PRIMARY KEY,
+          id SERIAL PRIMARY KEY,
           title VARCHAR(255) NOT NULL,
           done BOOLEAN NOT NULL DEFAULT FALSE,
+          project_id INTEGER,
+          due_date DATE,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-
-      // 3) S'assurer qu'il existe au moins un projet "Général"
-      //    (pour y ranger les tâches existantes).
-      const [projRows] = await pool.query("SELECT id FROM projects ORDER BY id ASC LIMIT 1");
-      let defaultProjectId;
-      if (projRows.length === 0) {
-        const [r] = await pool.query("INSERT INTO projects (name) VALUES (?)", ["Général"]);
-        defaultProjectId = r.insertId;
-      } else {
-        defaultProjectId = projRows[0].id;
-      }
-
-      // 4) Ajouter la colonne project_id aux tâches si elle n'existe pas encore.
-      if (!(await columnExists("tasks", "project_id"))) {
-        await pool.query("ALTER TABLE tasks ADD COLUMN project_id INT NULL");
-        // Ranger toutes les tâches existantes dans le projet "Général".
-        await pool.query("UPDATE tasks SET project_id = ? WHERE project_id IS NULL", [defaultProjectId]);
-      }
-
-      // 4 bis) Ajouter la colonne "due_date" (échéance) aux tâches si absente.
-      //        Les tâches existantes restent simplement sans échéance.
-      if (!(await columnExists("tasks", "due_date"))) {
-        await pool.query("ALTER TABLE tasks ADD COLUMN due_date DATE NULL");
-      }
-
-      // 4 ter) Ajouter la colonne "color" aux projets si elle n'existe pas encore.
-      //        Les projets existants prennent la couleur par défaut (bleu).
-      if (!(await columnExists("projects", "color"))) {
-        await pool.query(
-          "ALTER TABLE projects ADD COLUMN color VARCHAR(7) NOT NULL DEFAULT ?",
-          [DEFAULT_COLOR]
-        );
-      }
-
-      // 5) Table des notes (documents écrits) rattachées à un projet.
       await pool.query(`
         CREATE TABLE IF NOT EXISTS notes (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          project_id INT NOT NULL,
+          id SERIAL PRIMARY KEY,
+          project_id INTEGER NOT NULL,
           title VARCHAR(255) NOT NULL,
-          body MEDIUMTEXT,
+          body TEXT,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      // Migrations idempotentes (Postgres supporte ADD COLUMN IF NOT EXISTS).
+      await pool.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS color VARCHAR(7) NOT NULL DEFAULT '" + DEFAULT_COLOR + "'");
+      await pool.query("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id INTEGER");
+      await pool.query("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_date DATE");
 
+      const { rows } = await pool.query("SELECT id FROM projects ORDER BY id ASC LIMIT 1");
+      if (rows.length === 0) {
+        await pool.query("INSERT INTO projects (name) VALUES ($1)", ["Général"]);
+      }
       console.log("Base prête : tables 'projects', 'tasks', 'notes' OK.");
       return;
     } catch (err) {
@@ -141,78 +93,62 @@ async function initDb(retries = 10) {
 }
 
 // --- Routes : PROJETS -----------------------------------------------------
-
-// Lister les projets
 app.get("/api/projects", async (req, res) => {
-  const [rows] = await pool.query("SELECT * FROM projects ORDER BY created_at ASC");
+  const { rows } = await pool.query("SELECT * FROM projects ORDER BY created_at ASC");
   res.json(rows);
 });
 
-// Créer un projet
 app.post("/api/projects", async (req, res) => {
   const name = (req.body.name || "").trim();
   if (!name) return res.status(400).json({ error: "Le nom du projet est vide." });
   const color = sanitizeColor(req.body.color);
-  const [result] = await pool.query(
-    "INSERT INTO projects (name, color) VALUES (?, ?)",
+  const { rows } = await pool.query(
+    "INSERT INTO projects (name, color) VALUES ($1, $2) RETURNING id",
     [name, color]
   );
-  res.status(201).json({ id: result.insertId, name, color });
+  res.status(201).json({ id: rows[0].id, name, color });
 });
 
-// Renommer un projet et/ou changer sa couleur
 app.patch("/api/projects/:id", async (req, res) => {
   const fields = [];
   const values = [];
-
+  let i = 1;
   if (req.body.name !== undefined) {
     const name = (req.body.name || "").trim();
     if (!name) return res.status(400).json({ error: "Le nom du projet est vide." });
-    fields.push("name = ?");
-    values.push(name);
+    fields.push(`name = $${i++}`); values.push(name);
   }
   if (req.body.color !== undefined) {
-    fields.push("color = ?");
-    values.push(sanitizeColor(req.body.color));
+    fields.push(`color = $${i++}`); values.push(sanitizeColor(req.body.color));
   }
-
-  if (fields.length === 0) {
-    return res.status(400).json({ error: "Rien à mettre à jour." });
-  }
-
+  if (fields.length === 0) return res.status(400).json({ error: "Rien à mettre à jour." });
   values.push(req.params.id);
-  await pool.query(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`, values);
+  await pool.query(`UPDATE projects SET ${fields.join(", ")} WHERE id = $${i}`, values);
   res.json({ ok: true });
 });
 
-// Supprimer un projet (et ses tâches + notes)
 app.delete("/api/projects/:id", async (req, res) => {
   const { id } = req.params;
-  await pool.query("DELETE FROM tasks WHERE project_id = ?", [id]);
-  await pool.query("DELETE FROM notes WHERE project_id = ?", [id]);
-  await pool.query("DELETE FROM projects WHERE id = ?", [id]);
+  await pool.query("DELETE FROM tasks WHERE project_id = $1", [id]);
+  await pool.query("DELETE FROM notes WHERE project_id = $1", [id]);
+  await pool.query("DELETE FROM projects WHERE id = $1", [id]);
   res.json({ ok: true });
 });
 
 // --- Routes : TÂCHES ------------------------------------------------------
-
-// Lister les tâches d'un projet
 app.get("/api/tasks", async (req, res) => {
   const projectId = req.query.project_id;
   if (!projectId) return res.json([]);
-  // DATE_FORMAT garantit un due_date en texte AAAA-MM-JJ, sans décalage de fuseau.
-  // Tri : les tâches avec échéance d'abord (la plus proche en premier), puis les autres.
-  const [rows] = await pool.query(
+  const { rows } = await pool.query(
     `SELECT id, title, done, project_id, created_at,
-            DATE_FORMAT(due_date, '%Y-%m-%d') AS due_date
-     FROM tasks WHERE project_id = ?
+            to_char(due_date, 'YYYY-MM-DD') AS due_date
+     FROM tasks WHERE project_id = $1
      ORDER BY (due_date IS NULL), due_date ASC, created_at DESC`,
     [projectId]
   );
   res.json(rows);
 });
 
-// Ajouter une tâche dans un projet (échéance optionnelle)
 app.post("/api/tasks", async (req, res) => {
   const title = (req.body.title || "").trim();
   const projectId = req.body.project_id;
@@ -220,117 +156,91 @@ app.post("/api/tasks", async (req, res) => {
   if (!projectId) return res.status(400).json({ error: "Aucun projet sélectionné." });
   let dueDate = null;
   if (req.body.due_date) {
-    if (!isValidDueDate(req.body.due_date)) {
-      return res.status(400).json({ error: "La date limite est invalide." });
-    }
+    if (!isValidDueDate(req.body.due_date)) return res.status(400).json({ error: "La date limite est invalide." });
     dueDate = req.body.due_date;
   }
-  const [result] = await pool.query(
-    "INSERT INTO tasks (title, project_id, due_date) VALUES (?, ?, ?)",
+  const { rows } = await pool.query(
+    "INSERT INTO tasks (title, project_id, due_date) VALUES ($1, $2, $3) RETURNING id",
     [title, projectId, dueDate]
   );
-  res.status(201).json({
-    id: result.insertId, title, done: false, project_id: projectId, due_date: dueDate,
-  });
+  res.status(201).json({ id: rows[0].id, title, done: false, project_id: projectId, due_date: dueDate });
 });
 
-// Modifier une tâche :
-// - corps avec "due_date" → change l'échéance ("" ou null pour l'effacer)
-// - sinon → coche/décoche la tâche (comportement historique)
 app.patch("/api/tasks/:id", async (req, res) => {
   if (req.body && req.body.due_date !== undefined) {
     const raw = req.body.due_date;
     let dueDate = null;
     if (raw !== null && raw !== "") {
-      if (!isValidDueDate(raw)) {
-        return res.status(400).json({ error: "La date limite est invalide." });
-      }
+      if (!isValidDueDate(raw)) return res.status(400).json({ error: "La date limite est invalide." });
       dueDate = raw;
     }
-    await pool.query("UPDATE tasks SET due_date = ? WHERE id = ?", [dueDate, req.params.id]);
+    await pool.query("UPDATE tasks SET due_date = $1 WHERE id = $2", [dueDate, req.params.id]);
     return res.json({ ok: true });
   }
-  await pool.query("UPDATE tasks SET done = NOT done WHERE id = ?", [req.params.id]);
+  await pool.query("UPDATE tasks SET done = NOT done WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-// Supprimer une tâche
 app.delete("/api/tasks/:id", async (req, res) => {
-  await pool.query("DELETE FROM tasks WHERE id = ?", [req.params.id]);
+  await pool.query("DELETE FROM tasks WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
 // --- Routes : NOTES -------------------------------------------------------
-
-// Lister les notes d'un projet
 app.get("/api/notes", async (req, res) => {
   const projectId = req.query.project_id;
   if (!projectId) return res.json([]);
-  const [rows] = await pool.query(
-    "SELECT * FROM notes WHERE project_id = ? ORDER BY updated_at DESC",
+  const { rows } = await pool.query(
+    "SELECT * FROM notes WHERE project_id = $1 ORDER BY updated_at DESC",
     [projectId]
   );
   res.json(rows);
 });
 
-// Créer une note dans un projet
 app.post("/api/notes", async (req, res) => {
   const title = (req.body.title || "").trim();
   const body = (req.body.body || "").toString();
   const projectId = req.body.project_id;
   if (!title) return res.status(400).json({ error: "Le titre de la note est vide." });
   if (!projectId) return res.status(400).json({ error: "Aucun projet sélectionné." });
-  const [result] = await pool.query(
-    "INSERT INTO notes (project_id, title, body) VALUES (?, ?, ?)",
+  const { rows } = await pool.query(
+    "INSERT INTO notes (project_id, title, body) VALUES ($1, $2, $3) RETURNING id",
     [projectId, title, body]
   );
-  res.status(201).json({ id: result.insertId, project_id: projectId, title, body });
+  res.status(201).json({ id: rows[0].id, project_id: projectId, title, body });
 });
 
-// Modifier une note
 app.patch("/api/notes/:id", async (req, res) => {
   const title = (req.body.title || "").trim();
   const body = (req.body.body || "").toString();
   if (!title) return res.status(400).json({ error: "Le titre de la note est vide." });
-  await pool.query("UPDATE notes SET title = ?, body = ? WHERE id = ?", [title, body, req.params.id]);
+  await pool.query(
+    "UPDATE notes SET title = $1, body = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
+    [title, body, req.params.id]
+  );
   res.json({ ok: true });
 });
 
-// Supprimer une note
 app.delete("/api/notes/:id", async (req, res) => {
-  await pool.query("DELETE FROM notes WHERE id = ?", [req.params.id]);
+  await pool.query("DELETE FROM notes WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
-// --- Diagnostic (temporaire) ---------------------------------------------
+// --- Diagnostic -----------------------------------------------------------
 app.get("/__dbcheck", async (req, res) => {
   try {
-    const [r] = await pool.query("SELECT 1 AS ok");
-    res.json({ db: "ok", result: r });
+    const { rows } = await pool.query("SELECT 1 AS ok");
+    res.json({ db: "ok", result: rows });
   } catch (e) {
-    // Le détail complet reste dans les logs serveur ; on ne renvoie au
-    // navigateur qu'un code d'erreur, pas le message technique brut.
-    console.error("/__dbcheck :", e);
-    res.status(500).json({ db: "error", code: e.code });
+    res.status(500).json({ db: "error", code: e.code, message: e.message });
   }
 });
 
 // --- Démarrage ------------------------------------------------------------
 const port = process.env.PORT || 3000;
-
-// Indique en clair vers quel hôte de base on se connecte (sans le mot de passe).
 try {
   const u = new URL(dbUrl);
-  console.log(`Connexion base visée : ${u.hostname}:${u.port || 3306} (db ${u.pathname.slice(1)})`);
+  console.log(`Connexion base visée : ${u.hostname}:${u.port || 5432} (db ${u.pathname.slice(1)})`);
 } catch {}
-
-// On démarre le serveur web IMMÉDIATEMENT : le conteneur reste en ligne même si la
-// base met du temps à être prête (important sur les PaaS type Dokploy/Coolify).
 app.listen(port, () => console.log(`Appli en ligne sur le port ${port}`));
-
-// Connexion à la base en arrière-plan, avec de larges réessais (~2 min). On ne quitte
-// JAMAIS le process : si la base tarde, les routes répondront en erreur le temps qu'elle
-// soit prête, mais le conteneur ne plante pas.
-initDb(60).catch((err) =>
-  console.error("initDb a échoué après plusieurs essais :", err.message)
-);
+initDb(60).catch((err) => console.error("initDb a échoué :", err.message));
